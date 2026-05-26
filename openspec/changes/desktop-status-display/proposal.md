@@ -7,21 +7,21 @@ The ESP32 cannot read macOS system stats or calendars directly, so the design sp
 ## What Changes
 
 - Add ESP32-S3 firmware that drives the 1.83" ST7789P SPI LCD (240×284) via Arduino_GFX + LVGL (DC=4 CS=5 SCK=6 MOSI=7 RST=38, backlight GPIO40). Power rails managed via AXP2101 (XPowersLib).
-- Firmware keeps its own time via NTP, so the clock keeps working even if the Mac agent stops (also serves as a data-freshness indicator).
+- Firmware keeps its own time on the onboard PCF85063 RTC (I2C 0x51): the agent sends the current time in each status message, the firmware sets the RTC, and the RTC free-runs on its crystal so the clock keeps working even if the Mac agent stops (also serves as a data-freshness indicator). No WiFi/NTP required.
 - Firmware reads newline-delimited JSON from USB serial (CDC) and updates CPU/RAM gauges and an upcoming-events list.
 - Add backlight dimming / scheduled blanking for always-on power saving (LCD via GPIO40 PWM). Note: no AMOLED burn-in concern on this panel.
 - Add a Python Mac agent (`agent.py`) that samples CPU/RAM via `psutil` and reads upcoming events from the local Calendar.app via AppleScript, packaging them as JSON and writing to `/dev/cu.usbmodem*` via `pyserial`.
 - Define a simple newline-delimited JSON protocol as the contract between agent and firmware.
 - Provide an optional launchd setup so the agent auto-starts in the background.
 
-Non-goals (explicitly deferred): Microsoft Teams unread (no clean local API), Outlook unread (same AppleScript approach can be added later), GPU usage (requires `sudo powermetrics`), and WiFi/wireless transport.
+Non-goals (explicitly deferred): Microsoft Teams unread (no clean local API), Outlook unread (same AppleScript approach can be added later), GPU usage (requires `sudo powermetrics`), and WiFi/wireless transport (the clock now uses the onboard RTC instead of NTP, so no WiFi is needed at all in v1).
 
 ## Capabilities
 
 ### New Capabilities
 - `host-link-protocol`: The newline-delimited JSON message format and serial transport contract between the Mac agent and the firmware (fields, units, cadence, framing, malformed-line handling).
 - `mac-data-agent`: The macOS Python agent that collects CPU/RAM and calendar events and streams them over USB serial, including the optional launchd auto-start.
-- `display-firmware`: The ESP32-S3 firmware that initializes the AMOLED/LVGL stack, keeps NTP time, parses incoming protocol messages, renders the UI, and applies anti-burn-in measures.
+- `display-firmware`: The ESP32-S3 firmware that initializes the ST7789P/LVGL stack, keeps time on the PCF85063 RTC (set over the host link), parses incoming protocol messages, renders the UI, and applies backlight power saving.
 
 ### Modified Capabilities
 <!-- None: this is a greenfield project; the existing sketch is replaced. -->

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.espresso.calbridge</string>
+    <key>CFBundleName</key>
+    <string>ESPresso CalBridge</string>
+    <!-- TCC 看這兩個字串才會跳行事曆授權視窗 (macOS 14+ 用 FullAccess 那個) -->
+    <key>NSCalendarsUsageDescription</key>
+    <string>ESPresso reads your upcoming events to show them on the desk display.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>ESPresso reads your upcoming events to show them on the desk display.</string>
+</dict>
+</plist>

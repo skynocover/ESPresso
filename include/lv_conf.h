@@ -39,6 +39,9 @@
 #define LV_FONT_MONTSERRAT_48 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_16
 
+// --- 大字型支援：bpp=2 的 CJK 字型 (font_cjk18) bitmap index 超過 20-bit，需開此項改用 32-bit ---
+#define LV_FONT_FMT_TXT_LARGE 1
+
 // --- 用到的 widget (8.x 多半預設開啟，這裡明確標示需求) ---
 #define LV_USE_ARC 1
 #define LV_USE_BAR 1

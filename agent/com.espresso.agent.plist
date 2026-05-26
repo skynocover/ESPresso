@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ESPresso agent 開機自動啟動 (選用)。
+
+安裝步驟 (把下面兩個路徑換成你機器上的實際路徑)：
+  1. 把 __PYTHON__ 換成你的 python3 (which python3)，
+     __AGENT__ 換成 agent.py 的絕對路徑 (此檔同目錄)。
+  2. cp com.espresso.agent.plist ~/Library/LaunchAgents/
+  3. launchctl load ~/Library/LaunchAgents/com.espresso.agent.plist
+  停用： launchctl unload ~/Library/LaunchAgents/com.espresso.agent.plist
+
+注意：行事曆權限請來自先手動跑一次 calbridge/eventbridge 觸發的授權視窗；
+若由 launchd 在背景啟動，授權對話可能不會即時出現 —
+建議先在終端機手動跑一次 ./calbridge/eventbridge 完成授權，再交給 launchd。
+(別忘了先 sh calbridge/build.sh 編譯。)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.espresso.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__AGENT__</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/espresso-agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/espresso-agent.err</string>
+</dict>
+</plist>

@@ -1,0 +1,3 @@
+psutil>=5.9
+pyserial>=3.5
+# 行事曆不靠 pip：見 calbridge/ 的簽名 Swift 小程式 (sh calbridge/build.sh)

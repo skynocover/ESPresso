@@ -28,8 +28,10 @@ The agent collects data and the firmware renders it. Adding future data sources 
 ### Transport: USB serial (CDC), newline-delimited JSON
 The board is USB-powered on the desk anyway; serial is the simplest reliable channel and needs zero network config. One JSON object per line keeps framing trivial and debuggable (you can watch it with a serial monitor). Considered WiFi (HTTP/MQTT/WebSocket) and ESPHome/Home Assistant; both add firmware/connectivity complexity that contradicts the "simple desktop gadget" goal. WiFi remains a clean future upgrade.
 
-### Clock owned by firmware via NTP, not sent over the wire
-The ESP32 syncs time over NTP and renders the clock independently. This means the clock survives agent crashes and doubles as a freshness signal: if data fields go stale but the clock ticks, the user knows the agent (not the board) is the problem. The onboard PCF85063 RTC can hold time across brief WiFi/NTP gaps if WiFi is ever added.
+### Clock kept on the onboard PCF85063 RTC, seeded over USB (no NTP/WiFi)
+The agent includes the current local time in each status message; the firmware writes it to the onboard PCF85063 RTC (I2C 0x51) once (and re-syncs only if drift exceeds a few seconds), and renders the clock from the RTC. The RTC free-runs on its own crystal, so the clock survives agent crashes and doubles as a freshness signal: if data fields go stale but the clock ticks, the user knows the agent (not the board) is the problem.
+
+This replaces the original NTP design. NTP would have required WiFi credentials and a network stack purely for a clock, which contradicts the "simple USB gadget, no network config" goal — the data already flows over USB, so seeding the RTC over the same link costs only a small `time` field in the protocol plus a minimal PCF85063 driver. Considered (B) displaying agent-sent time with no RTC, but that freezes the clock when the agent stops and loses the freshness-signal property. WiFi/NTP remains a clean future upgrade if untethered operation is ever wanted.
 
 ### Display stack: Arduino_GFX (ST7789) + LVGL
 Drive the ST7789P over `Arduino_ESP32SPI` + `Arduino_ST7789` (Arduino_GFX), with LVGL on top for arc/gauge and list widgets. No custom driver needed. Backlight on GPIO40 (PWM via LEDC).
@@ -60,7 +62,7 @@ This is an LCD, so there is no AMOLED burn-in concern. For always-on use we inst
 
 Greenfield. Phased so each stage is independently verifiable:
 0. Bring up Waveshare LVGL demo — confirm the panel lights and draws.
-1. NTP clock in firmware (no Mac dependency).
+1. RTC clock in firmware, seeded over USB by the agent (no NTP/WiFi).
 2. Data pipeline: agent emits fake JSON → firmware parses and shows CPU/RAM.
 3. Real data: psutil CPU/RAM + AppleScript calendar.
 4. Polish: anti-burn-in, stale-data handling, UI styling, launchd auto-start.

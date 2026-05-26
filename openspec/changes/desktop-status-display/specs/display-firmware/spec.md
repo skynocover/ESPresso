@@ -7,12 +7,16 @@ The firmware SHALL initialize the ST7789P SPI display (240×284) and the LVGL re
 - **WHEN** the board powers on with no agent connected
 - **THEN** the LCD displays the UI (clock plus placeholder/empty data fields)
 
-### Requirement: Keep time via NTP independently of the agent
-The firmware SHALL obtain time via NTP and render a clock that continues updating regardless of whether the agent is sending data. The clock SHALL NOT depend on values received over the serial protocol.
+### Requirement: Keep time on the onboard RTC independently of the agent
+The firmware SHALL keep time on the onboard PCF85063 RTC (I2C 0x51), seeded from the `time` field of incoming status messages, and SHALL render a clock that continues updating regardless of whether the agent is sending data. Once seeded, the clock SHALL advance from the free-running RTC and SHALL NOT freeze when serial data stops. No WiFi/NTP is required.
 
 #### Scenario: Clock runs without agent
 - **WHEN** the agent is not running or no serial data is arriving
-- **THEN** the on-screen clock still advances using NTP-synced time
+- **THEN** the on-screen clock still advances using the free-running RTC
+
+#### Scenario: RTC seeded from the host link
+- **WHEN** a status message carrying a `time` field arrives and the RTC is unset or has drifted
+- **THEN** the firmware sets the RTC from that time and renders the clock from the RTC
 
 ### Requirement: Render CPU, RAM, and upcoming events
 The firmware SHALL display the latest CPU% and RAM% (e.g. as gauges/arcs) and a list of upcoming events received via the host-link protocol, updating the UI when new messages arrive.

@@ -12,11 +12,22 @@ The agent and firmware SHALL exchange data as UTF-8 JSON objects, one object per
 - **THEN** it discards that line and retains the previously displayed values without crashing
 
 ### Requirement: Status message schema
-A status message SHALL contain a `cpu` integer (0–100, percent), a `ram` integer (0–100, percent), and an `events` array. Each event object SHALL contain a `t` string (start time, `HH:MM`, 24-hour) and a `title` string. The `events` array MAY be empty. Unknown fields SHALL be ignored by the firmware to allow forward-compatible additions.
+A status message SHALL contain a `time` string (the host's current local time, `YYYY-MM-DD HH:MM:SS`, 24-hour), a `cpu` integer (0–100, percent), a `ram` integer (0–100, percent), and an `events` array. Each event object SHALL contain a `t` string (start time, `HH:MM`, 24-hour) and a `title` string. The `events` array MAY be empty. Unknown fields SHALL be ignored by the firmware to allow forward-compatible additions.
 
 #### Scenario: Full status message
-- **WHEN** the agent sends `{"cpu":42,"ram":68,"events":[{"t":"14:30","title":"Standup"}]}`
-- **THEN** the firmware displays CPU 42%, RAM 68%, and one upcoming event "14:30 Standup"
+- **WHEN** the agent sends `{"time":"2026-05-26 14:29:58","cpu":42,"ram":68,"events":[{"t":"14:30","title":"Standup"}]}`
+- **THEN** the firmware displays CPU 42%, RAM 68%, one upcoming event "14:30 Standup", and seeds its clock from the `time` field
+
+### Requirement: Time seeds the firmware RTC
+The agent SHALL include the host's current local time in each status message via the `time` field. The firmware SHALL use this field to set its onboard PCF85063 RTC when the RTC is unset or has drifted beyond a small threshold from the received time, and SHALL otherwise let the RTC free-run. The displayed clock SHALL be driven by the RTC, not directly by the latest `time` field, so the clock keeps advancing when no messages arrive.
+
+#### Scenario: RTC seeded on first message
+- **WHEN** the firmware receives its first valid status message containing a `time` field
+- **THEN** it sets the RTC to that time and renders the clock from the RTC
+
+#### Scenario: Clock free-runs without the agent
+- **WHEN** no status message has arrived for an extended period
+- **THEN** the displayed clock continues advancing from the free-running RTC
 
 #### Scenario: Empty events
 - **WHEN** the agent sends a message whose `events` array is empty
