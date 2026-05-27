@@ -1,4 +1,6 @@
 .pio
+# WiFi/OTA 憑證 (用 include/secrets.h.example 為範本自行建立)
+include/secrets.h
 # Mac agent 虛擬環境 / Python 暫存
 agent/.venv
 __pycache__/

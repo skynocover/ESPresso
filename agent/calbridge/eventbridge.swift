@@ -28,14 +28,25 @@ func collect(_ store: EKEventStore) {
     let now = Date()
     let horizon = now.addingTimeInterval(Double(days) * 86400)
     let pred = store.predicateForEvents(withStart: now, end: horizon, calendars: nil)
-    let fmt = DateFormatter()
-    fmt.dateFormat = "HH:mm"  // 預設用本機時區
+    let cal = Calendar.current
+    let fTime = DateFormatter(); fTime.dateFormat = "HH:mm"   // 本機時區
+    let fDate = DateFormatter(); fDate.dateFormat = "M/d"
+    // "t" 欄位帶上日期，讓未來幾天的事件分得出是哪天 (韌體原樣渲染)：
+    //   今天計時事件 → "今天 HH:mm"；其他天 → "M/d HH:mm"；全天 → "M/d"(今天→"今天")
+    func label(_ ev: EKEvent) -> String {
+        let d = ev.startDate!
+        let day = cal.isDateInToday(d) ? "今天" : fDate.string(from: d)  // 日期前綴
+        if ev.isAllDay {
+            return day
+        }
+        return day + " " + fTime.string(from: d)
+    }
     let sorted = store.events(matching: pred)
         .filter { $0.startDate != nil && $0.startDate >= now }
         .sorted { $0.startDate < $1.startDate }
     var out: [[String: String]] = []
     for ev in sorted.prefix(maxN) {
-        out.append(["t": fmt.string(from: ev.startDate), "title": ev.title ?? ""])
+        out.append(["t": label(ev), "title": ev.title ?? ""])
     }
     emit(out)
 }

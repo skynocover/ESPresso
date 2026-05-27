@@ -14,14 +14,21 @@
     行事曆走原生 EventKit，但透過 calbridge/ 的簽名 Swift 小程式呼叫
     (osascript whose-filter 實測 >150s 不可用；裸 Python+pyobjc 拿不到 TCC 授權)。
     記得先 `sh calbridge/build.sh` 編譯出 calbridge/eventbridge。
+傳輸 (兩種，協定完全相同；資料先打包成同一份 newline-JSON):
+    - serial：開 /dev/cu.usbmodem* 寫入
+    - network：解析 espresso.local (或 --host)，開 TCP 寫入；只用標準函式庫 socket
 用法:
-    python3 agent.py                       # 自動找 /dev/cu.usbmodem*
-    python3 agent.py --port /dev/cu.usbmodemXXXX
+    python3 agent.py                       # 自動探索：能解析 espresso.local 就走網路，否則走序列
+    python3 agent.py --net                 # 強制網路 (espresso.local:3333)
+    python3 agent.py --net --host 192.168.1.42   # mDNS 不通時手動指定 IP
+    python3 agent.py --serial              # 強制序列，自動找 /dev/cu.usbmodem*
+    python3 agent.py --serial --port /dev/cu.usbmodemXXXX
 """
 import argparse
 import glob
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -35,6 +42,9 @@ CAL_REFRESH_S = 300.0       # 行事曆重抓間隔 (EventKit 很快，仍快取
 CAL_HORIZON_DAYS = 7        # 往後看幾天
 MAX_EVENTS = 5              # 最多送幾筆事件
 RECONNECT_DELAY_S = 2.0     # 斷線後重試間隔
+
+DEFAULT_HOST = "espresso.local"  # 韌體 mDNS 宣告的名稱
+DEFAULT_TCP_PORT = 3333          # 韌體 TCP 線路埠 (與 main.cpp 的 TCP_PORT 一致)
 
 
 # ---------- CPU / RAM ----------
@@ -85,38 +95,131 @@ def fetch_events():
             for e in data[:MAX_EVENTS] if isinstance(e, dict)]
 
 
-# ---------- Serial ----------
-def find_port(explicit):
-    if explicit:
-        return explicit
-    ports = sorted(glob.glob("/dev/cu.usbmodem*"))
-    return ports[0] if ports else None
+# ---------- 傳輸 ----------
+# 兩種傳輸都提供同樣的介面：send(line_bytes) 失敗時丟例外；主迴圈接住後呼叫
+# reconnect() 重連、不退出。資料打包邏輯與兩者無關 (協定相同)。
+
+class Transport:
+    """共用的重連流程：關掉舊的連線 (吞掉清理時的例外) 後重新 connect()。
+    子類需提供 name、connect()、send() 與 _close() (關閉底層連線)。"""
+
+    def reconnect(self):
+        try:
+            self._close()
+        except Exception:
+            pass
+        self.connect()
 
 
-def open_port(explicit):
-    """阻塞直到成功開啟序列埠，回傳 Serial 物件。"""
-    while True:
-        port = find_port(explicit)
-        if port:
+class SerialTransport(Transport):
+    name = "serial"
+
+    def __init__(self, explicit_port):
+        self._explicit = explicit_port
+        self._ser = None
+
+    @staticmethod
+    def _find_port(explicit):
+        if explicit:
+            return explicit
+        ports = sorted(glob.glob("/dev/cu.usbmodem*"))
+        return ports[0] if ports else None
+
+    def connect(self):
+        """阻塞直到成功開啟序列埠。"""
+        while True:
+            port = self._find_port(self._explicit)
+            if port:
+                try:
+                    self._ser = serial.Serial(port, 115200, timeout=1)
+                    print(f"[serial] 已連線 {port}")
+                    return
+                except (serial.SerialException, OSError) as e:
+                    print(f"[serial] 開啟 {port} 失敗: {e}", file=sys.stderr)
+            else:
+                print("[serial] 找不到 /dev/cu.usbmodem*，等待板子接上…", file=sys.stderr)
+            time.sleep(RECONNECT_DELAY_S)
+
+    def send(self, data):
+        self._ser.write(data)
+
+    def _close(self):
+        if self._ser:
+            self._ser.close()
+        self._ser = None
+
+
+class NetworkTransport(Transport):
+    name = "network"
+
+    def __init__(self, host, port):
+        self._host = host
+        self._port = port
+        self._sock = None
+
+    def connect(self):
+        """阻塞直到成功連上 TCP；解析 (mDNS) 失敗或拒連都重試、不退出。"""
+        while True:
             try:
-                ser = serial.Serial(port, 115200, timeout=1)
-                print(f"[serial] 已連線 {port}")
-                return ser
-            except (serial.SerialException, OSError) as e:
-                print(f"[serial] 開啟 {port} 失敗: {e}", file=sys.stderr)
-        else:
-            print("[serial] 找不到 /dev/cu.usbmodem*，等待板子接上…", file=sys.stderr)
-        time.sleep(RECONNECT_DELAY_S)
+                self._sock = socket.create_connection((self._host, self._port), timeout=5)
+                self._sock.settimeout(5)
+                print(f"[net] 已連線 {self._host}:{self._port}")
+                return
+            except (socket.gaierror, OSError) as e:
+                print(f"[net] 連線 {self._host}:{self._port} 失敗 ({e})，重試…",
+                      file=sys.stderr)
+            time.sleep(RECONNECT_DELAY_S)
+
+    def send(self, data):
+        self._sock.sendall(data)
+
+    def _close(self):
+        if self._sock:
+            self._sock.close()
+        self._sock = None
+
+
+def _resolves(host):
+    """host 能否被解析 (mDNS/DNS)；用於 auto 模式判斷板子是否在網路上。"""
+    try:
+        socket.getaddrinfo(host, None)
+        return True
+    except socket.gaierror:
+        return False
+
+
+def select_transport(args):
+    """依旗標挑傳輸；預設自動探索：能解析 espresso.local 走網路，否則走序列。"""
+    if args.net:
+        return NetworkTransport(args.host, args.tcp_port)
+    if args.serial:
+        return SerialTransport(args.port)
+    # auto
+    if _resolves(args.host):
+        print(f"[auto] {args.host} 可解析 → 走網路")
+        return NetworkTransport(args.host, args.tcp_port)
+    print(f"[auto] {args.host} 解析不到 → 走序列")
+    return SerialTransport(args.port)
 
 
 # ---------- 主迴圈 ----------
 def main():
     ap = argparse.ArgumentParser(description="ESPresso Mac agent")
-    ap.add_argument("--port", help="序列埠 (預設自動找 /dev/cu.usbmodem*)")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--net", action="store_true",
+                      help="強制走網路 (TCP 到 espresso.local)")
+    mode.add_argument("--serial", action="store_true",
+                      help="強制走序列 (/dev/cu.usbmodem*)")
+    ap.add_argument("--host", default=DEFAULT_HOST,
+                    help=f"網路模式的主機名/IP (預設 {DEFAULT_HOST}；mDNS 不通時填 IP)")
+    ap.add_argument("--tcp-port", type=int, default=DEFAULT_TCP_PORT,
+                    help=f"網路模式的 TCP 埠 (預設 {DEFAULT_TCP_PORT})")
+    ap.add_argument("--port", help="序列模式的埠 (預設自動找 /dev/cu.usbmodem*)")
     args = ap.parse_args()
 
     psutil.cpu_percent(interval=None)  # 第一次呼叫只是初始化基準
-    ser = open_port(args.port)
+    transport = select_transport(args)
+    transport.connect()
 
     events = []
     last_cal = 0.0
@@ -136,15 +239,11 @@ def main():
         line = (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
 
         try:
-            ser.write(line)
+            transport.send(line)
         except (serial.SerialException, OSError) as e:
-            # 板子被拔了：關掉、重連、繼續 (不退出)
-            print(f"[serial] 寫入失敗 ({e})，嘗試重連…", file=sys.stderr)
-            try:
-                ser.close()
-            except Exception:
-                pass
-            ser = open_port(args.port)
+            # 板子重開/WiFi 掉/Mac 睡醒/被拔線：重連、繼續 (不退出)
+            print(f"[{transport.name}] 寫入失敗 ({e})，嘗試重連…", file=sys.stderr)
+            transport.reconnect()
             continue
 
         time.sleep(SEND_INTERVAL_S)
