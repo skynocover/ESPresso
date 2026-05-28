@@ -41,9 +41,24 @@ func collect(_ store: EKEventStore) {
         }
         return day + " " + fTime.string(from: d)
     }
+    let today0 = cal.startOfDay(for: now)
+    // 「還沒開始」(startDate > now) 的事件才是真正即將到來、該拿 i==0 的下一件事 accent；
+    // 進行中的會議與今天的全天事件 (startDate <= now) 仍保留顯示，但排在未開始事件之後，
+    // 不會因為開始時間最早 (全天=00:00) 就霸佔高亮位。
+    func upcoming(_ ev: EKEvent) -> Bool { (ev.startDate ?? now) > now }
     let sorted = store.events(matching: pred)
-        .filter { $0.startDate != nil && $0.startDate >= now }
-        .sorted { $0.startDate < $1.startDate }
+        .filter { ev in
+            guard let s = ev.startDate else { return false }
+            // 用「結束時間」判斷是否還沒過，才留得住正在進行中的事件 (已開始但還沒結束)：
+            //   全天事件 startDate 是當天 00:00，用「日」粒度看 endDate 是否還在今天或之後；
+            //   計時事件看 endDate 是否還沒到 now (剛開始的會議不該一過 startDate 就消失)。
+            return ev.isAllDay ? (ev.endDate ?? s) >= today0 : (ev.endDate ?? s) >= now
+        }
+        .sorted {
+            let (a, b) = (upcoming($0), upcoming($1))
+            if a != b { return a }               // 未開始的排前面
+            return $0.startDate < $1.startDate    // 同組內依開始時間
+        }
     var out: [[String: String]] = []
     for ev in sorted.prefix(maxN) {
         out.append(["t": label(ev), "title": ev.title ?? ""])

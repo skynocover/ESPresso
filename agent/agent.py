@@ -179,26 +179,28 @@ class NetworkTransport(Transport):
         self._sock = None
 
 
-def _resolves(host):
-    """host 能否被解析 (mDNS/DNS)；用於 auto 模式判斷板子是否在網路上。"""
+def _board_reachable(host, port, timeout=2.0):
+    """auto 模式用：實際試開一次 TCP (短逾時) 判斷板子在不在網路上，連完即關。
+    只看名稱能否解析不夠——mDNS 殘留/別台主機應答時名稱解析得到但板子離線，
+    會讓 NetworkTransport.connect() 無限重連卡死、不退回插著的序列埠。"""
     try:
-        socket.getaddrinfo(host, None)
-        return True
-    except socket.gaierror:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
         return False
 
 
 def select_transport(args):
-    """依旗標挑傳輸；預設自動探索：能解析 espresso.local 走網路，否則走序列。"""
+    """依旗標挑傳輸；預設自動探索：TCP 連得上 espresso.local 走網路，否則走序列。"""
     if args.net:
         return NetworkTransport(args.host, args.tcp_port)
     if args.serial:
         return SerialTransport(args.port)
-    # auto
-    if _resolves(args.host):
-        print(f"[auto] {args.host} 可解析 → 走網路")
+    # auto：實際試連 TCP (不只看名稱解析) 判斷板子在不在線，連得上走網路、否則退回序列
+    if _board_reachable(args.host, args.tcp_port):
+        print(f"[auto] {args.host}:{args.tcp_port} 連得上 → 走網路")
         return NetworkTransport(args.host, args.tcp_port)
-    print(f"[auto] {args.host} 解析不到 → 走序列")
+    print(f"[auto] {args.host}:{args.tcp_port} 連不上 → 走序列")
     return SerialTransport(args.port)
 
 
