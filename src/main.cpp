@@ -58,6 +58,7 @@ static constexpr char MDNS_HOST[] = "espresso";       // → espresso.local
 XPowersPMU pmu;
 PCF85063 rtc;
 bool g_rtc_ok = false;
+bool g_pmu_ok = false;
 
 Arduino_DataBus *bus = new Arduino_ESP32SPI(
     LCD_DC, LCD_CS, LCD_SCK, LCD_MOSI, GFX_NOT_DEFINED /* MISO */);
@@ -72,15 +73,15 @@ static lv_disp_drv_t disp_drv;
 // 含中文字的 LVGL 字型 (src/font_cjk18.c，由 lv_font_conv 從 Arial Unicode 產生)
 extern const lv_font_t font_cjk18;
 
-// --- UI 物件 (三張卡片：時鐘 / 系統 / 行事曆) ---
+// --- UI 物件 (頂部狀態列 + 三張卡片：時鐘 / 系統 / 行事曆) ---
 static lv_obj_t *card_clock, *card_stats, *card_events;
 static lv_obj_t *lbl_clock;
-static lv_obj_t *lbl_date;
-static lv_obj_t *lbl_status;          // 時鐘卡右上角：連線狀態 icon (WiFi/USB/離線)
+static lv_obj_t *lbl_date;            // 頂部狀態列左：日期 + 星期
+static lv_obj_t *status_box;          // 頂部狀態列右：連線 icon + 電池 (flex row)
+static lv_obj_t *lbl_status;          // 連線狀態 icon (WiFi/USB/離線)
+static lv_obj_t *lbl_batt;            // 電池 icon+%；偵測不到電池就隱藏 (flex 自動回收空間)
 static lv_obj_t *bar_cpu, *bar_ram;
 static lv_obj_t *lbl_cpu_val, *lbl_ram_val;
-static lv_obj_t *lbl_events_title;
-static lv_obj_t *lbl_events_icon;     // 行事曆卡標題前的清單 icon
 static lv_obj_t *next_marker;         // 下一件事左側的 accent 直條
 // 每列拆兩個 label：時間前綴 (分色) + 標題 (純文字)。標題獨立成 label 後不走
 // recolor，使用者標題裡的 '#' 原樣顯示、不再被當成 LVGL 顏色指令而遭刪除。
@@ -90,8 +91,8 @@ static lv_obj_t *lbl_ev_title[MAX_EVENTS];
 // 行事曆內排版 (卡片內座標)
 static constexpr int EV_X = 8;        // 時間前綴左縮排 (留 next_marker 的位置)
 static constexpr int EV_TIME_W = 96;  // 時間前綴欄寬 (足夠放 "今天 14:30")；標題接其右
-static constexpr int EV_Y0 = 24;      // 第一筆事件 y
-static constexpr int EV_STEP = 18;    // 每行 y 間距
+static constexpr int EV_Y0 = 4;       // 第一筆事件 y (拿掉標題列後可從卡片頂端開始)
+static constexpr int EV_STEP = 21;    // 每行 y 間距 (≈font_cjk18 行高 22，不再重疊)
 
 // 卡片底色 / 強調色 (COL_CARD_BG 是時鐘冒號 recolor 用的純整數；其餘為 lv_color_t)
 #define COL_CARD_BG 0x16181c
@@ -202,48 +203,57 @@ static void make_stat_row(lv_obj_t *card, lv_obj_t *&bar, lv_obj_t *&val,
 static void build_ui()
 {
     lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    // 極深的同色系背景 (非純黑) → 卡片邊緣更柔和，少一點「貼在黑洞上」的廉價感
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x0d0e10), 0);
 
-    // === 卡片 1：時鐘 + 日期 ===
-    card_clock = make_card(scr, 8, 6, LCD_WIDTH - 16, 78);
+    // === 頂部狀態列 (浮在背景上，非卡片)：日期左、連線 icon + 電池右 ===
+    // 把「日期/連線/電池」這些 meta 資訊集中成一條，時鐘卡才能純當大字主角。
+    lbl_date = lv_label_create(scr);
+    lv_obj_set_style_text_font(lbl_date, &font_cjk18, 0);
+    lv_obj_set_style_text_color(lbl_date, COL_MUTED, 0);
+    lv_label_set_text(lbl_date, "");
+    lv_obj_align(lbl_date, LV_ALIGN_TOP_LEFT, 12, 6);
+
+    // 右側 icon 群：flex row，靠右對齊。電池隱藏時 flex 會把空間收回，連線 icon 順勢靠右。
+    status_box = lv_obj_create(scr);
+    lv_obj_remove_style_all(status_box);   // 透明、無邊框/內距
+    lv_obj_set_size(status_box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(status_box, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(status_box, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(status_box, 8, 0);
+    lv_obj_clear_flag(status_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(status_box, LV_ALIGN_TOP_RIGHT, -12, 6);
+
+    // 連線狀態 icon：WiFi / USB / 離線 — 比「整片變灰」更直接 (先建 → 在電池左邊)
+    lbl_status = lv_label_create(status_box);
+    lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lbl_status, COL_STALE, 0);
+    lv_label_set_text(lbl_status, LV_SYMBOL_WARNING);
+
+    // 電池 icon+%：預設隱藏，update_battery() 偵測到電池才顯示 (目前未接 → 不出現)
+    lbl_batt = lv_label_create(status_box);
+    lv_obj_set_style_text_font(lbl_batt, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lbl_batt, COL_MUTED, 0);
+    lv_label_set_text(lbl_batt, "");
+    lv_obj_add_flag(lbl_batt, LV_OBJ_FLAG_HIDDEN);
+
+    // === 卡片 1：時鐘 (hero，獨佔一卡置中) ===
+    card_clock = make_card(scr, 8, 28, LCD_WIDTH - 16, 58);
     lbl_clock = lv_label_create(card_clock);
     lv_obj_set_style_text_font(lbl_clock, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(lbl_clock, lv_color_white(), 0);
     lv_label_set_recolor(lbl_clock, true);   // 讓冒號可單獨變色 (閃爍)
     lv_label_set_text(lbl_clock, "--:--");
-    lv_obj_align(lbl_clock, LV_ALIGN_TOP_MID, 0, -2);
-
-    lbl_date = lv_label_create(card_clock);
-    lv_obj_set_style_text_font(lbl_date, &font_cjk18, 0);
-    lv_obj_set_style_text_color(lbl_date, COL_MUTED, 0);
-    lv_label_set_text(lbl_date, "");
-    lv_obj_align(lbl_date, LV_ALIGN_BOTTOM_MID, 0, 0);
-
-    // 連線狀態 icon (右上角)：WiFi / USB / 離線 — 比「整片變灰」更直接
-    lbl_status = lv_label_create(card_clock);
-    lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lbl_status, COL_STALE, 0);
-    lv_label_set_text(lbl_status, LV_SYMBOL_WARNING);
-    lv_obj_align(lbl_status, LV_ALIGN_TOP_RIGHT, 2, -2);
+    lv_obj_align(lbl_clock, LV_ALIGN_CENTER, 0, 0);
 
     // === 卡片 2：CPU / RAM 橫條 ===
     card_stats = make_card(scr, 8, 90, LCD_WIDTH - 16, 56);
     make_stat_row(card_stats, bar_cpu, lbl_cpu_val, 0, "CPU", COL_CPU);
     make_stat_row(card_stats, bar_ram, lbl_ram_val, 20, "RAM", COL_RAM);
 
-    // === 卡片 3：行事曆 ===
-    card_events = make_card(scr, 8, 152, LCD_WIDTH - 16, 126);
-    lbl_events_icon = lv_label_create(card_events);
-    lv_obj_set_style_text_font(lbl_events_icon, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lbl_events_icon, COL_MUTED, 0);
-    lv_label_set_text(lbl_events_icon, LV_SYMBOL_LIST);
-    lv_obj_set_pos(lbl_events_icon, 0, 1);
-
-    lbl_events_title = lv_label_create(card_events);
-    lv_obj_set_style_text_font(lbl_events_title, &font_cjk18, 0);
-    lv_obj_set_style_text_color(lbl_events_title, COL_MUTED, 0);
-    lv_label_set_text(lbl_events_title, "即將到來");
-    lv_obj_set_pos(lbl_events_title, 22, 0);
+    // === 卡片 3：行事曆 (拿掉「即將到來」標題列 → 多一行空間、行距放正常不再重疊；
+    //     事件列本身 (accent 條 + 時間前綴) 已自帶語意，標題列屬裝飾，省去更乾淨) ===
+    card_events = make_card(scr, 8, 150, LCD_WIDTH - 16, 128);
 
     // 下一件事左側的 accent 直條 (跟著第一筆事件)
     next_marker = lv_obj_create(card_events);
@@ -362,6 +372,51 @@ static void update_status_icon()
     }
     lv_label_set_text(lbl_status, sym);
     lv_obj_set_style_text_color(lbl_status, c, 0);
+}
+
+// 電池：AXP2101 偵測到電池才顯示 icon+%；目前未接 → 隱藏 (flex 自動回收空間)。
+// 之後裝上 LiPo 不必改韌體就會自己出現。充電時轉綠並顯示閃電；低電量轉琥珀/紅。
+static void update_battery()
+{
+    int pct = -1;
+    if (g_pmu_ok && pmu.isBatteryConnect())
+        pct = pmu.getBatteryPercent();   // 無 gauge/讀取失敗回 -1
+
+    if (pct < 0)
+    {
+        if (!lv_obj_has_flag(lbl_batt, LV_OBJ_FLAG_HIDDEN))
+            lv_obj_add_flag(lbl_batt, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    bool chg = pmu.isCharging();
+
+    const char *sym;
+    if (pct > 80)
+        sym = LV_SYMBOL_BATTERY_FULL;
+    else if (pct > 60)
+        sym = LV_SYMBOL_BATTERY_3;
+    else if (pct > 40)
+        sym = LV_SYMBOL_BATTERY_2;
+    else if (pct > 20)
+        sym = LV_SYMBOL_BATTERY_1;
+    else
+        sym = LV_SYMBOL_BATTERY_EMPTY;
+
+    lv_color_t c;
+    if (chg)
+        c = COL_RAM;
+    else if (pct <= 20)
+        c = COL_CRIT;
+    else if (pct <= 40)
+        c = COL_WARN;
+    else
+        c = COL_MUTED;
+
+    lv_obj_clear_flag(lbl_batt, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_text_color(lbl_batt, c, 0);
+    // 充電時用閃電蓋掉電量階梯 icon (一眼看出在充)，否則顯示對應電量階梯
+    lv_label_set_text_fmt(lbl_batt, "%s %d%%", chg ? LV_SYMBOL_CHARGE : sym, pct);
 }
 
 // stale 狀態切換 → 重繪受影響元件 (時鐘照走，不變灰)
@@ -642,8 +697,10 @@ void setup()
     delay(50);
     if (pmu.begin(Wire, AXP2101_SLAVE_ADDRESS, PIN_I2C_SDA, PIN_I2C_SCL))
     {
+        g_pmu_ok = true;
         pmu.setALDO3Voltage(3300);
         pmu.enableALDO3();
+        pmu.enableBattDetection();   // 開電池偵測 → getBatteryPercent()/isBatteryConnect() 才有效
         Serial.println("[OK] AXP2101 ALDO3 on");
     }
     else
@@ -713,6 +770,7 @@ void loop()
     {
         last_tick = now;
         update_clock();
+        update_battery();
         // 過期偵測
         bool stale = !g_has_msg || (now - g_last_msg_ms > STALE_TIMEOUT_MS);
         if (stale != g_is_stale)
