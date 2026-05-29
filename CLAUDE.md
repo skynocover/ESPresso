@@ -38,6 +38,7 @@ python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
 - **TCP 是單一 client**：同時只能跑「一支」agent。跑兩支會互相把對方踢掉 → broken-pipe 重連風暴（看起來像畫面閃爍/斷續）。
 - `WiFi.setSleep(false)` 必須保留：開 modem-sleep 會週期漏接 ARP/SYN → 間歇 `No route to host` + 區網延遲飆到上百 ms。
 - **OTA 用 IP 不用 `.local`**（見上）。OTA 期間 `loop()` 要還活著才收得到 → 若 loop 卡死，得先實體重開板子。
+- **朝下休眠會擋 OTA**：接電池後板子朝下趴平 3 秒進 deep-sleep（省電），睡著時 `loop()` 不跑 → OTA 連不到。**要燒先讓板子立著醒著**（立起來或敲螢幕都會喚醒）。朝向校正值與 `FACEDOWN_*` 門檻見 README「IMU 朝向校正」＋「朝下休眠」。
 
 ## 環境坑（macOS）
 

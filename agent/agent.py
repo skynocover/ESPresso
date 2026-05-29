@@ -65,7 +65,8 @@ _warned_no_helper = False
 def fetch_events():
     """呼叫 CalBridge 取未來 CAL_HORIZON_DAYS 天、最多 MAX_EVENTS 筆事件。
 
-    helper 不存在、未授權、無事件、或任何例外，一律回空 list 且不丟例外。
+    回傳 list (可能為空 = 真的沒事件)；遇暫時性失敗 (helper 不存在/逾時/壞
+    輸出/例外) 回 None，讓呼叫端保留上一份快取，不會因一次抖動就清空畫面。
     """
     global _warned_no_helper
     if not os.path.exists(_HELPER):
@@ -73,7 +74,7 @@ def fetch_events():
             print(f"[cal] 找不到 {_HELPER}；事件清單將為空。"
                   f"請先執行 `sh calbridge/build.sh` 編譯。", file=sys.stderr)
             _warned_no_helper = True
-        return []
+        return None
     try:
         proc = subprocess.run(
             [_HELPER, str(CAL_HORIZON_DAYS), str(MAX_EVENTS)],
@@ -81,11 +82,11 @@ def fetch_events():
         )
         data = json.loads(proc.stdout.strip() or "[]")
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
-        print(f"[cal] CalBridge 讀取失敗 ({e.__class__.__name__})，當作無事件", file=sys.stderr)
-        return []
+        print(f"[cal] CalBridge 讀取失敗 ({e.__class__.__name__})，保留上一份事件", file=sys.stderr)
+        return None
 
     if not isinstance(data, list):
-        return []
+        return None
     if not data:
         # 空清單常見原因：TCC 尚未授權。第一次請在自己的終端機跑一次
         # `calbridge/eventbridge` 並在跳出的視窗按「允許」。
@@ -228,7 +229,9 @@ def main():
     while True:
         now = time.monotonic()
         if now - last_cal >= CAL_REFRESH_S or last_cal == 0.0:
-            events = fetch_events()
+            fetched = fetch_events()
+            if fetched is not None:   # None = 暫時性失敗 → 保留上一份；[] = 真的沒事件
+                events = fetched
             last_cal = now
 
         cpu, ram = sample_cpu_ram()
