@@ -53,10 +53,18 @@ python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
 
 - **沒有 `timeout` 指令**（那是 GNU coreutils）。要限時讀序列就用 Python/pyserial。
 - ESP32-S3 原生 USB CDC：開機 banner 只在前幾秒印，且 `loop()` 沒 print 時序列是空的（**不代表當機**）。用 pyserial toggle DTR/RTS 觸發 reset 後再讀（範例見 README）。
+- **拔插 USB 抓不到完整 boot log**：host 重新 enumerate 要 ~1.5–2s，這段時間韌體 setup 早期的 `Serial.println` 因 `setTxTimeoutMs(0)` 沒人讀就丟，所以 `pio device monitor` 只接得到 `[OK] UI ready` 之後（WiFi 那段）的訊息。要看 `[OK]/[WARN] AXP2101/RTC/IMU/audio` 那段，只有兩條路：(1) monitor 先 `Connected!` 後**手按板上 RESET 鍵**（host 不斷線）；(2) pyserial DTR/RTS reset 同個 session 直接讀。
 - 開機掛 USB CDC 已開（`-DARDUINO_USB_CDC_ON_BOOT=1`）。
 - 燒錄/讀序列需要實體板子，且看畫面要靠使用者回報。
 - **這個 Claude Bash 環境解析不了 `.local`**（mDNS 多播被沙箱擋）：測板子連線一律用 **IP**，不要用 `espresso.local`（`socket.getaddrinfo` 會 gaierror）。IP 用 `dns-sd -G v4 espresso.local` 拿。但 `ping`/IP unicast 是通的。
 - **loop 卡死的徵兆**：USB CDC 埠（`/dev/cu.usbmodem*`）消失但板子仍 `ping` 得到 = `loop()` task 卡住（不是整顆重開）；WiFi/lwIP 在另一個 task 照答 ping。需實體重插/RST 才能救回 USB。
+
+## 韌體渲染與資料路徑（已踩過）
+
+- **LVGL 8.x `LV_LABEL_LONG_DOT` 不是「單行截斷」**：實際行為是「**先 wrap、再在最後一行加 ...**」。Label 設了 width 但沒鎖 height 時，長中文標題會展開兩行 → 把下一個 label 擠掉，看起來像「不同筆截斷長度不同」其實是 y 位置全跑掉。**修法**：`lv_obj_set_height(lbl, font.line_height)` 鎖死一行高，wrap 沒地方放就退化成「真的單行截尾 + ...」。`main.cpp:402-414` 是這個修法的範本。
+- **「等待校時」≠ RTC 壞**：`update_clock()` 只在 `g_rtc_ok=true` 且 `rtc.read()` 回 false 時印這串，後者只有 VL bit=1（RTC 從沒被 set 過）會觸發。**冷開機 VL=1 是常態**（PCF85063 走 ALDO3 沒備援），開機後等 agent 第一筆成功 parse 才會清。看到「等待校時」遲遲不消失第一個假設是「**沒人送資料／資料每行都 parse fail**」，不是 RTC 硬體問題。驗活：`echo '{"time":"...","cpu":1,"ram":1,"events":[]}' | nc -w1 <IP> 3333`，立刻顯示 = 韌體完全 OK。（`g_rtc_ok=false` 的狀態畫面是「`--:--` + 空白日期」，不是「等待校時」。）
+- **host-link 行緩衝 ≥1024**（`feed_byte()`）：cc 三欄 ~75B + 5 筆事件 × CJK 標題（UTF-8 每字 3B）→ 單行很容易超過 512。超過時 `feed_byte` 把 buf 丟掉 → JSON 殘缺 → `deserializeJson` 失敗 → `apply_status` 沒跑 → `g_last_msg_ms` 沒更新。**級聯症狀**：8s → stale（全變灰），2min → 背光降到 40/255，10min → 背光熄。看起來像 agent 掛了、板子斷線，實際 agent 一直在送、是韌體每行都 drop。**任何新欄位要加進 host-link JSON 前先估行長**。
+- **症狀疊加 / 同一根因多重表現**：buffer 512 太小同時造成「中文標題顯示舊」「背光週期性熄」「agent 看起來掛了」三個現象。Debug 時看到多症狀**先找共同上游**（資料流哪裡斷？parse 哪裡 fail？），不要每個分頭修。
 
 ## 流程
 
