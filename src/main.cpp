@@ -726,7 +726,11 @@ static void feed_byte(char c, String &buf, char src)
         apply_line(buf, src);
     else if (c != '\r')
     {
-        if (buf.length() < 512) // 防爆衝
+        // 防爆衝。原本 512：加 cc_session/cc_week_pct/cc_week_reset (~75B) 後，
+        // 5 筆 CJK 標題事件 (UTF-8 每字 3B) 很容易超過 → 行被截一半 → JSON parse 失敗，
+        // 畫面卡上一份事件 (常見症狀：「芒種」之類的中文標題顯示舊或亂)。
+        // 1024 對單行 JSON 有 2× 餘裕，PSRAM 充足、零成本。
+        if (buf.length() < 1024)
             buf += c;
         else
             buf = ""; // 過長視為壞行，丟棄
