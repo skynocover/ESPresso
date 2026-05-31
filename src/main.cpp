@@ -398,12 +398,17 @@ static void build_ui()
         lv_obj_set_pos(lbl_ev_time[i], EV_X, y);
         lv_label_set_text(lbl_ev_time[i], "");
 
-        // 標題：純文字 (不開 recolor)，使用者輸入的 '#' 原樣安全
+        // 標題：純文字 (不開 recolor)，使用者輸入的 '#' 原樣安全。
+        // LVGL 8.x 的 LV_LABEL_LONG_DOT 預設行為是「先 wrap 再在最後一行加 ...」 —
+        // label 沒鎖高度時長中文會展開兩行,把下一筆事件擠掉。
+        // 解法:把高度鎖死成一行 → wrap 沒地方放 → 退化成「同一行內截尾加 ...」。
+        // 靜態、好讀,長標題只看得到頭幾個字 + ... (calm tech 比 marquee 滾動友善)。
         lbl_ev_title[i] = lv_label_create(card_events);
         lv_obj_set_style_text_font(lbl_ev_title[i], &font_cjk18, 0);
         lv_obj_set_style_text_color(lbl_ev_title[i], lv_color_white(), 0);
         lv_label_set_long_mode(lbl_ev_title[i], LV_LABEL_LONG_DOT);
         lv_obj_set_width(lbl_ev_title[i], LCD_WIDTH - 32 - EV_X - EV_TIME_W);
+        lv_obj_set_height(lbl_ev_title[i], font_cjk18.line_height);   // 鎖死一行高,wrap 沒地方放
         lv_obj_set_pos(lbl_ev_title[i], EV_X + EV_TIME_W, y);
         lv_label_set_text(lbl_ev_title[i], "");
     }
