@@ -46,6 +46,13 @@ RECONNECT_DELAY_S = 2.0     # 斷線後重試間隔
 DEFAULT_HOST = "espresso.local"  # 韌體 mDNS 宣告的名稱
 DEFAULT_TCP_PORT = 3333          # 韌體 TCP 線路埠 (與 main.cpp 的 TCP_PORT 一致)
 
+# Claude Code 用量 (全部本機檔案、零授權、不打 API)
+CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+CLAUDE_HUD_CACHE = os.path.expanduser("~/.claude/plugins/claude-hud/.usage-cache.json")
+TOKEN_REFRESH_S = 10.0       # token tail 重算間隔；Claude 一回合結束才寫檔，回合動輒數十秒，
+                             # 5s/10s 對「實時感」沒差別，10s 還省一半 stat (見 design D7)
+WEEK_REFRESH_S = 30.0        # 本週% 重讀間隔 (一週才動十幾趴，不必勤讀)
+
 
 # ---------- CPU / RAM ----------
 def sample_cpu_ram():
@@ -94,6 +101,126 @@ def fetch_events():
     # 只取需要的欄位，並夾住筆數
     return [{"t": str(e.get("t", "")), "title": str(e.get("title", ""))}
             for e in data[:MAX_EVENTS] if isinstance(e, dict)]
+
+
+# ---------- Claude Code 用量 ----------
+# 兩個數字都來自本機檔案，韌體只渲染：
+#   這次 (cc_session)  = tail ~/.claude/projects/**/*.jsonl 累加的 token 累積數 (單調)
+#   本週 (cc_week_pct) = 讀 claude-hud plugin 寫好的 cache (它已付過 Keychain/OAuth 代價)
+# 為什麼不自己打 usage API：credential 在 Keychain (launchd 背景拿不到)、endpoint 私有、
+# token 會過期要換新 → 三個都會壞。讀檔零授權、背景可跑。詳見 design.md D1/D2/D3。
+class ClaudeUsage:
+    """tail JSONL 累加 token + 讀 claude-hud cache 拿本週%。所有失敗都吞掉不擋串流。"""
+
+    def __init__(self):
+        self._offsets = {}        # path -> 已讀到的 byte offset (書籤)
+        self._seen = set()        # (message.id, requestId) 去重，避免 resume/fork 重複計
+        self._session_tokens = 0  # 自啟動起的單調累積 (絕對值無意義，韌體只看差值)
+        self._week_pct = None     # 0-100 或 None (= 無值)
+        self._week_reset = None   # 預先格式化的字串 或 None
+        self._seed_bookmarks()
+
+    @staticmethod
+    def _iter_files():
+        return glob.glob(os.path.join(CLAUDE_PROJECTS_DIR, "**", "*.jsonl"), recursive=True)
+
+    def _seed_bookmarks(self):
+        """開機只記每檔目前大小 (不讀內容) → 計數從 0 起，只算之後新增的。"""
+        for f in self._iter_files():
+            try:
+                self._offsets[f] = os.path.getsize(f)
+            except OSError:
+                pass
+
+    def _entry_tokens(self, obj):
+        """一筆 transcript 行的 token 貢獻 (含去重)。非 assistant / 重複 → 0。"""
+        if not isinstance(obj, dict) or obj.get("type") != "assistant":
+            return 0
+        msg = obj.get("message") or {}
+        mid = msg.get("id")
+        if mid is not None:
+            key = (mid, obj.get("requestId"))
+            if key in self._seen:
+                return 0
+            self._seen.add(key)
+        u = msg.get("usage") or {}
+        # 「output + 對話」= input + output + cache_creation；排除 cache_read (便宜、會灌水)
+        return (int(u.get("input_tokens") or 0)
+                + int(u.get("output_tokens") or 0)
+                + int(u.get("cache_creation_input_tokens") or 0))
+
+    def refresh_tokens(self):
+        """只讀每檔書籤之後「完整的行」，累加 token；不全量重掃。"""
+        for f in self._iter_files():
+            try:
+                size = os.path.getsize(f)
+            except OSError:
+                continue
+            start = self._offsets.get(f, 0)        # 沒書籤 = 全新檔 → 從 0 整檔讀
+            if size < start:                       # 被截斷/輪替 → 從頭
+                start = 0
+            if size <= start:
+                continue
+            try:
+                with open(f, "rb") as fh:
+                    fh.seek(start)
+                    chunk = fh.read(size - start)
+            except OSError:
+                continue
+            # 只處理到最後一個換行為止；未完成的尾巴留到下次 (避免吃半行又前移書籤漏算)
+            last_nl = chunk.rfind(b"\n")
+            if last_nl == -1:
+                continue
+            self._offsets[f] = start + last_nl + 1
+            for line in chunk[:last_nl].split(b"\n"):
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue                       # 壞行/截斷行 skip，不炸
+                self._session_tokens += self._entry_tokens(obj)
+
+    def refresh_week(self):
+        """讀 claude-hud cache 拿 sevenDay% + 重置時間；缺/壞 → 清成無值 (不打 API)。"""
+        try:
+            with open(CLAUDE_HUD_CACHE) as fh:
+                data = (json.load(fh) or {}).get("data") or {}
+            pct = data.get("sevenDay")
+            self._week_pct = int(pct) if isinstance(pct, (int, float)) else None
+            self._week_reset = self._format_reset(data.get("sevenDayResetAt"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            self._week_pct = None
+            self._week_reset = None
+
+    @staticmethod
+    def _format_reset(iso):
+        """ISO Z 重置時間 → 「1d 23h 後重置」式精確倒數 (對齊 claude-hud HUD 的 d/h 格式)。"""
+        if not isinstance(iso, str) or not iso:
+            return None
+        try:
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        secs = (dt - datetime.now().astimezone()).total_seconds()
+        if secs <= 0:
+            return "reset soon"
+        days = int(secs // 86400)
+        hours = int((secs % 86400) // 3600)
+        if days > 0:
+            return f"reset in {days}d {hours}h"
+        if hours > 0:
+            return f"reset in {hours}h"
+        return "reset soon"
+
+    def fields(self):
+        """要塞進 host-link 訊息的欄位：cc_session 恆有；week 兩欄可缺。"""
+        out = {"cc_session": self._session_tokens}
+        if self._week_pct is not None:
+            out["cc_week_pct"] = self._week_pct
+        if self._week_reset is not None:
+            out["cc_week_reset"] = self._week_reset
+        return out
 
 
 # ---------- 傳輸 ----------
@@ -224,8 +351,11 @@ def main():
     transport = select_transport(args)
     transport.connect()
 
+    usage = ClaudeUsage()
     events = []
     last_cal = 0.0
+    last_tok = 0.0
+    last_week = 0.0
     while True:
         now = time.monotonic()
         if now - last_cal >= CAL_REFRESH_S or last_cal == 0.0:
@@ -234,12 +364,31 @@ def main():
                 events = fetched
             last_cal = now
 
+        # Claude 用量：token 每隔一次 tick 重 tail、本週% 每 ~30s 重讀；
+        # 不重算的 tick 沿用上次值 (送出仍維持 SEND_INTERVAL_S 讓 dashboard 即時)。
+        # 用 try/except 兜底：Claude 用量是次要資訊，refresh 出意外時要凍結上次值繼續送
+        # 主訊息 (CPU/RAM/clock/events)，不能拖垮主 dashboard。內部已抓 OSError/JSON 錯，
+        # 這裡擋未預期型別 (MemoryError、未來重構引入的 bug 等)。
+        if now - last_tok >= TOKEN_REFRESH_S or last_tok == 0.0:
+            try:
+                usage.refresh_tokens()
+            except Exception as e:
+                print(f"[usage] refresh_tokens failed, keeping last values: {e}", file=sys.stderr)
+            last_tok = now
+        if now - last_week >= WEEK_REFRESH_S or last_week == 0.0:
+            try:
+                usage.refresh_week()
+            except Exception as e:
+                print(f"[usage] refresh_week failed, keeping last values: {e}", file=sys.stderr)
+            last_week = now
+
         cpu, ram = sample_cpu_ram()
         msg = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "cpu": cpu,
             "ram": ram,
             "events": events,
+            **usage.fields(),
         }
         line = (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
 
