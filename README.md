@@ -182,6 +182,36 @@ launchctl load ~/Library/LaunchAgents/com.espresso.agent.plist
 
 > 建議先在終端機手動跑一次完成行事曆授權，再交給 launchd（背景啟動時授權視窗可能不會即時出現）。
 
+## 蕃茄鐘 Claude Code 用量顯示
+
+把板子橫倒（左側朝下）進蕃茄鐘時，畫面除了倒數，還會顯示兩個 Claude Code 用量數字：
+
+```
+        ┌──────────────────────────────┐
+        │      │      23:55       │     │ ← 倒數 (置中於圓圈)
+        │      │      34.4K       │     │ ← 本次：這次蕃茄鐘的 token (青色)
+        │       ╰────────────────╯      │
+        │  ▓▓▓▓▓░░░░░  18% reset in 1d 23h│ ← 本週：訂閱配額已用 % + 重置倒數
+        └──────────────────────────────┘
+```
+
+資料全部來自**本機檔案、零授權、不打任何 API**，由 `agent.py` 收集後沿用 host-link JSON 多帶三個欄位（`cc_session` / `cc_week_pct` / `cc_week_reset`，舊韌體會忽略，向前相容）。
+
+- **本次 token**：agent 增量 tail `~/.claude/projects/**/*.jsonl`，累加每個 assistant 回合的 `input + output + cache_creation`（**排除** `cache_read`，避免快取灌水）成一個只增的計數；板子進蕃茄鐘時拍基準線、顯示「現在 − 基準線」。不全量重掃語料庫，每 10s 重算（Claude 一回合結束才寫檔，更勤沒意義）。
+- **本週配額 %**：讀 `claude-hud` plugin 寫好的 cache `~/.claude/plugins/claude-hud/.usage-cache.json`（`data.sevenDay` + `data.sevenDayResetAt`），每 30s 一次。**為什麼不自己打 API**：credential 在 macOS Keychain（launchd 背景拿不到、會跳授權框）、usage endpoint 私有、OAuth token 會過期要換新——claude-hud 已付過這些代價，直接讀它的成果最穩。
+
+### 依賴 / 啟用
+
+- 本次 token **不需額外設定**，agent 一跑就有。
+- 本週 % 是**軟相依 claude-hud**：裝了才有，沒裝（或 cache 讀不到）就顯示 `—`，不影響其餘功能。`claude-hud` 是 Claude Code 的 statusline plugin（可在 Claude Code 的 plugin marketplace 搜尋安裝），會把訂閱用量快取成上述 JSON 檔。
+
+### 隱私 / 安全（請先讀）
+
+- 此功能**會讀取你本機的 Claude Code 對話紀錄**（`~/.claude/projects/`）來統計 token——只算數量、**不送任何對話內容**。
+- 這些 token 數字跟其他狀態一樣走 host-link，而 v1 的 **TCP 線路未認證/未加密**（見「無線傳輸 §安全性」）——同網段的人理論上讀得到你的用量數字。敏感度低、屬「本地信任」取捨；介意的話走 USB 序列即可。
+
+> 離線調版面：`python3 fake_sender.py` 可注入假的 `cc_*`（`--no-usage` 測「—」、`--session-step` 模擬往上跳），不用真的操 Claude。規格見 `openspec/specs/claude-code-usage/`。
+
 ## 無線傳輸（WiFi）
 
 讓板子擺脫資料線：插任意 USB 充電器供電，資料走 WiFi。Mac 開著且同網段時即時更新；Mac 關機/離網時畫面把過期資料變灰、RTC 時鐘照走。序列線路保留作為除錯/救援/首次燒錄用。
