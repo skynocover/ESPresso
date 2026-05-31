@@ -33,6 +33,11 @@ I2C 匯流排 (共用): SDA = GPIO15, SCL = GPIO14
   掃到位址: 0x15(CST816) 0x18(ES8311) 0x34(AXP2101)
             0x40 0x51(RTC) 0x6B(IMU) 0x7E
 
+I2S 音訊 (ES8311):
+  MCLK = GPIO16   BCLK = GPIO9    LRCK = GPIO45
+  DOUT = GPIO8    DIN  = GPIO10 (mic, 未用)
+  PA_EN= GPIO46 (喇叭功放 enable, active-high)
+
 按鈕: BOOT = GPIO0,  PWR = GPIO41
 ```
 
