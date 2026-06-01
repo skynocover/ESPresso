@@ -202,8 +202,17 @@ launchctl load ~/Library/LaunchAgents/com.espresso.agent.plist
 
 ### 依賴 / 啟用
 
-- 本次 token **不需額外設定**，agent 一跑就有。
+設計上是**漸進增強**：核心功能零依賴，沒有任何一塊「不裝就整個不能跑」。
+
+| 顯示 | 需要 Claude Code | 需要 claude-hud |
+|---|:---:|:---:|
+| 時鐘 / CPU / RAM / 行事曆 / 蕃茄鐘計時 | ❌ | ❌ |
+| 本次 token（這次蕃茄鐘用量） | ✅ | ❌ |
+| 本週配額 % | ✅ | ✅ |
+
+- 本次 token **不需額外設定也不需 claude-hud**，只要使用者**有在用 Claude Code**（`~/.claude/projects/` 有對話紀錄），agent 一跑就有。
 - 本週 % 是**軟相依 claude-hud**：裝了才有，沒裝（或 cache 讀不到）就顯示 `—`，不影響其餘功能。`claude-hud` 是 Claude Code 的 statusline plugin（可在 Claude Code 的 plugin marketplace 搜尋安裝），會把訂閱用量快取成上述 JSON 檔。
+- 完全沒用 Claude Code 也行：兩個用量顯示為 `0` / `—`，裝置當「桌面狀態顯示器」（時鐘＋CPU/RAM＋行事曆＋蕃茄鐘）仍完整可用。
 
 ### 隱私 / 安全（請先讀）
 
